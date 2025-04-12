@@ -1,15 +1,13 @@
 # main.py
 import os
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, Response, Depends
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from anthropic import Anthropic
 import json
 import logging
-import secrets
 import time
-from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
+import importlib
 
 # Load environment variables
 load_dotenv()
@@ -29,7 +27,7 @@ logger = logging.getLogger(__name__)
 logger.addFilter(SensitiveDataFilter())
 
 # Initialize FastAPI app
-app = FastAPI(title="Privacy-Focused Code Reviewer")
+app = FastAPI(title="Multi-LLM Privacy-Focused Code Reviewer")
 
 # Add CORS middleware
 app.add_middleware(
@@ -40,20 +38,204 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize Anthropic client
-anthropic = Anthropic(api_key=os.environ.get("API_KEY"))
+# LLM Provider Factory
+class LLMFactory:
+    @staticmethod
+    def get_llm_provider(provider_name: str):
+        """
+        Factory method to get the appropriate LLM provider client.
+        """
+        provider_name = provider_name.lower()
+        
+        if provider_name == "anthropic":
+            return AnthropicProvider()
+        elif provider_name == "openai":
+            return OpenAIProvider()
+        elif provider_name == "ollama":
+            return OllamaProvider()
+        elif provider_name == "deepseek":
+            return DeepseekProvider()
+        elif provider_name == "huggingface":
+            return HuggingFaceProvider()
+        elif provider_name == "mistral":
+            return MistralProvider()
+        else:
+            logger.error(f"Unknown LLM provider: {provider_name}")
+            raise ValueError(f"Unsupported LLM provider: {provider_name}")
 
-# Security utilities
-def verify_api_key(api_key: str = None):
-    # In production, implement proper API key verification
-    if not api_key:
-        return False
-    # Demo only - replace with actual validation
-    return True
+# LLM Provider Interface
+class LLMProvider:
+    def generate_response(self, prompt: str, max_tokens: int = 4000) -> str:
+        """
+        Generate a response from the LLM.
+        
+        Args:
+            prompt: The prompt to send to the LLM
+            max_tokens: Maximum tokens in the response
+            
+        Returns:
+            The LLM's response as a string
+        """
+        raise NotImplementedError("Each LLM provider must implement this method")
 
-class CodeReviewRequest(BaseModel):
-    messages: List[Dict[str, Any]]
-    api_key: Optional[str] = None
+# Anthropic (Claude) Provider
+class AnthropicProvider(LLMProvider):
+    def __init__(self):
+        try:
+            from anthropic import Anthropic
+            api_key = os.environ.get("ANTHROPIC_API_KEY")
+            if not api_key:
+                raise ValueError("ANTHROPIC_API_KEY environment variable is not set")
+            self.client = Anthropic(api_key=api_key)
+            self.model = os.environ.get("ANTHROPIC_MODEL", "claude-3-5-sonnet-20240620")
+            logger.info(f"Initialized Anthropic provider with model: {self.model}")
+        except ImportError:
+            logger.error("Anthropic package not installed. Run: pip install anthropic")
+            raise
+            
+    def generate_response(self, prompt: str, max_tokens: int = 4000) -> str:
+        response = self.client.messages.create(
+            model=self.model,
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.content[0].text
+
+# OpenAI Provider
+class OpenAIProvider(LLMProvider):
+    def __init__(self):
+        try:
+            from openai import OpenAI
+            api_key = os.environ.get("OPENAI_API_KEY")
+            if not api_key:
+                raise ValueError("OPENAI_API_KEY environment variable is not set")
+            self.client = OpenAI(api_key=api_key)
+            self.model = os.environ.get("OPENAI_MODEL", "gpt-4o")
+            logger.info(f"Initialized OpenAI provider with model: {self.model}")
+        except ImportError:
+            logger.error("OpenAI package not installed. Run: pip install openai")
+            raise
+            
+    def generate_response(self, prompt: str, max_tokens: int = 4000) -> str:
+        response = self.client.chat.completions.create(
+            model=self.model,
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.choices[0].message.content
+
+# Ollama Provider (Local)
+class OllamaProvider(LLMProvider):
+    def __init__(self):
+        try:
+            import ollama
+            self.client = ollama
+            self.model = os.environ.get("OLLAMA_MODEL", "codellama:latest")
+            logger.info(f"Initialized Ollama provider with model: {self.model}")
+        except ImportError:
+            logger.error("Ollama package not installed. Run: pip install ollama")
+            raise
+            
+    def generate_response(self, prompt: str, max_tokens: int = 4000) -> str:
+        response = self.client.generate(
+            model=self.model,
+            prompt=prompt,
+            options={"temperature": 0.2, "num_predict": max_tokens}
+        )
+        return response['response']
+
+# DeepSeek Provider
+class DeepseekProvider(LLMProvider):
+    def __init__(self):
+        try:
+            from openai import OpenAI  # DeepSeek uses OpenAI-compatible API
+            api_key = os.environ.get("DEEPSEEK_API_KEY")
+            if not api_key:
+                raise ValueError("DEEPSEEK_API_KEY environment variable is not set")
+            base_url = os.environ.get("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
+            self.client = OpenAI(api_key=api_key, base_url=base_url)
+            self.model = os.environ.get("DEEPSEEK_MODEL", "deepseek-coder")
+            logger.info(f"Initialized DeepSeek provider with model: {self.model}")
+        except ImportError:
+            logger.error("OpenAI package not installed. Run: pip install openai")
+            raise
+            
+    def generate_response(self, prompt: str, max_tokens: int = 4000) -> str:
+        response = self.client.chat.completions.create(
+            model=self.model,
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.choices[0].message.content
+
+# Mistral Provider
+class MistralProvider(LLMProvider):
+    def __init__(self):
+        try:
+            from mistralai.client import MistralClient
+            api_key = os.environ.get("MISTRAL_API_KEY")
+            if not api_key:
+                raise ValueError("MISTRAL_API_KEY environment variable is not set")
+            self.client = MistralClient(api_key=api_key)
+            self.model = os.environ.get("MISTRAL_MODEL", "mistral-large-latest")
+            logger.info(f"Initialized Mistral provider with model: {self.model}")
+        except ImportError:
+            logger.error("Mistral package not installed. Run: pip install mistralai")
+            raise
+            
+    def generate_response(self, prompt: str, max_tokens: int = 4000) -> str:
+        response = self.client.chat(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=max_tokens
+        )
+        return response.choices[0].message.content
+
+# HuggingFace Provider
+class HuggingFaceProvider(LLMProvider):
+    def __init__(self):
+        try:
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+            import torch
+            
+            # Load model name from environment or use default
+            self.model_name = os.environ.get("HUGGINGFACE_MODEL", "bigcode/starcoder2-15b")
+            logger.info(f"Initializing HuggingFace provider with model: {self.model_name}")
+            
+            # This will download the model if not already present
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.model_name, 
+                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                device_map="auto"
+            )
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            logger.info(f"HuggingFace model loaded on {self.device}")
+        except ImportError:
+            logger.error("Transformers package not installed. Run: pip install transformers torch")
+            raise
+            
+    def generate_response(self, prompt: str, max_tokens: int = 4000) -> str:
+        import torch
+        
+        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+        
+        # Generate
+        with torch.no_grad():
+            output = self.model.generate(
+                **inputs,
+                max_new_tokens=max_tokens,
+                do_sample=True,
+                temperature=0.2,
+                top_p=0.95,
+            )
+            
+        # Decode and extract only the new content (not the prompt)
+        full_output = self.tokenizer.decode(output[0], skip_special_tokens=True)
+        prompt_len = len(prompt)
+        response = full_output[prompt_len:]
+        
+        return response
 
 def build_code_review_prompt(code_content: str, review_focus: Optional[str] = None):
     """Build a prompt for code review without storing the code."""
@@ -126,15 +308,20 @@ async def handle_code_review(request: Request):
         # Build prompt for code review
         prompt = build_code_review_prompt(code_content, review_focus)
         
-        # Call the model
-        response = anthropic.messages.create(
-            model="claude-3-5-sonnet-20240620",
-            max_tokens=4000,
-            messages=[{"role": "user", "content": prompt}]
-        )
+        # Get the configured LLM provider
+        llm_provider_name = os.environ.get("LLM_PROVIDER", "anthropic").lower()
+        logger.info(f"Using LLM provider: {llm_provider_name}")
         
-        # Extract the review
-        review = response.content[0].text
+        try:
+            llm_provider = LLMFactory.get_llm_provider(llm_provider_name)
+            review = llm_provider.generate_response(prompt)
+        except Exception as e:
+            logger.error(f"Error with LLM provider {llm_provider_name}: {str(e)}")
+            return Response(
+                content=json.dumps({"error": f"LLM provider error: {str(e)}"}),
+                media_type="application/json",
+                status_code=500
+            )
         
         # Construct the MCP response
         mcp_response = {
@@ -176,9 +363,14 @@ async def handle_code_review(request: Request):
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
-    return {"status": "healthy", "timestamp": time.time()}
+    provider_name = os.environ.get("LLM_PROVIDER", "anthropic")
+    return {
+        "status": "healthy", 
+        "provider": provider_name,
+        "timestamp": time.time()
+    }
 
 if __name__ == "__main__":
     import uvicorn
-    logger.info("Starting Privacy-Focused Code Reviewer MCP Server")
+    logger.info(f"Starting Multi-LLM Code Reviewer with provider: {os.environ.get('LLM_PROVIDER', 'anthropic')}")
     uvicorn.run(app, host="0.0.0.0", port=8000)
