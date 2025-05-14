@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/puvaanraaj-ai-code-reviewer-mcp-badge.png)](https://mseep.ai/app/puvaanraaj-ai-code-reviewer-mcp)
+
 # Privacy-Focused AI Code Reviewer
 
 An MCP (Model Context Protocol) server that provides AI-powered code reviews without storing or logging any source code.
